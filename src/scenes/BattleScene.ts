@@ -14,6 +14,19 @@ export class BattleScene extends Phaser.Scene {
   private selectedPosition: Position | null = null;
   private validMoves: Position[] = [];
 
+  // Visual elements
+  private boardTiles: Phaser.GameObjects.Rectangle[][] = [];
+  private unitSprites: Map<Unit, Phaser.GameObjects.Container> = new Map();
+  private moveHighlights: Phaser.GameObjects.Rectangle[] = [];
+  private selectionHighlight: Phaser.GameObjects.Rectangle | null = null;
+
+  // Board rendering constants
+  private tileSize: number = 0;
+  private boardStartX: number = 0;
+  private boardStartY: number = 0;
+  private readonly BOARD_PADDING = 20;
+  private readonly UI_HEIGHT = 120;
+
   constructor() {
     super({ key: 'BattleScene' });
   }
@@ -26,8 +39,17 @@ export class BattleScene extends Phaser.Scene {
     const dimensions = this.runState.getBoardDimensions();
     this.boardManager = new BoardManager(dimensions.rows, dimensions.cols);
 
+    // Calculate board rendering parameters
+    this.calculateBoardLayout();
+
     // Setup the initial board state
     this.setupBattle();
+
+    // Render the board
+    this.renderBoard();
+
+    // Render all units
+    this.renderAllUnits();
 
     // Add UI elements
     this.createUI();
@@ -187,6 +209,246 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Calculates board layout parameters based on screen size
+   */
+  private calculateBoardLayout(): void {
+    const { width, height } = this.cameras.main;
+    const dimensions = this.boardManager.getDimensions();
+
+    // Calculate available space (accounting for UI)
+    const availableWidth = width - (this.BOARD_PADDING * 2);
+    const availableHeight = height - this.UI_HEIGHT - (this.BOARD_PADDING * 2);
+
+    // Calculate tile size to fit the board
+    const tileSizeByWidth = availableWidth / dimensions.cols;
+    const tileSizeByHeight = availableHeight / dimensions.rows;
+
+    // Use the smaller dimension to ensure board fits
+    this.tileSize = Math.floor(Math.min(tileSizeByWidth, tileSizeByHeight));
+
+    // Calculate board dimensions
+    const boardWidth = this.tileSize * dimensions.cols;
+    const boardHeight = this.tileSize * dimensions.rows;
+
+    // Center the board
+    this.boardStartX = (width - boardWidth) / 2;
+    this.boardStartY = this.UI_HEIGHT + (height - this.UI_HEIGHT - boardHeight) / 2;
+  }
+
+  /**
+   * Renders the chess board with alternating tile colors
+   */
+  private renderBoard(): void {
+    const dimensions = this.boardManager.getDimensions();
+    this.boardTiles = [];
+
+    // Light and dark tile colors (chess board style)
+    const lightColor = 0xf0d9b5; // Light beige
+    const darkColor = 0xb58863;   // Dark brown
+
+    for (let row = 0; row < dimensions.rows; row++) {
+      this.boardTiles[row] = [];
+      for (let col = 0; col < dimensions.cols; col++) {
+        // Alternate colors (chess board pattern)
+        const isLight = (row + col) % 2 === 0;
+        const color = isLight ? lightColor : darkColor;
+
+        const x = this.boardStartX + col * this.tileSize + this.tileSize / 2;
+        const y = this.boardStartY + row * this.tileSize + this.tileSize / 2;
+
+        const tile = this.add.rectangle(x, y, this.tileSize - 2, this.tileSize - 2, color);
+        tile.setStrokeStyle(1, 0x000000, 0.2);
+        tile.setInteractive({ useHandCursor: true });
+
+        this.boardTiles[row][col] = tile;
+      }
+    }
+  }
+
+  /**
+   * Renders all units on the board
+   */
+  private renderAllUnits(): void {
+    const dimensions = this.boardManager.getDimensions();
+
+    // Clear existing sprites
+    this.unitSprites.forEach(sprite => sprite.destroy());
+    this.unitSprites.clear();
+
+    // Render all units
+    for (let row = 0; row < dimensions.rows; row++) {
+      for (let col = 0; col < dimensions.cols; col++) {
+        const unit = this.boardManager.getUnit({ row, col });
+        if (unit) {
+          this.renderUnit(unit, { row, col });
+        }
+      }
+    }
+  }
+
+  /**
+   * Renders a single unit on the board
+   */
+  private renderUnit(unit: Unit, position: Position): void {
+    const x = this.boardStartX + position.col * this.tileSize + this.tileSize / 2;
+    const y = this.boardStartY + position.row * this.tileSize + this.tileSize / 2;
+
+    // Circle color based on team
+    const circleColor = unit.getTeam() === Team.PLAYER ? 0x00ff00 : 0xff0000;
+    const circleRadius = this.tileSize * 0.35;
+
+    // Create container for unit sprite
+    const container = this.add.container(x, y);
+
+    // Background circle
+    const circle = this.add.circle(0, 0, circleRadius, circleColor);
+    circle.setStrokeStyle(2, 0x000000, 0.8);
+
+    // Piece type text
+    const pieceSymbol = this.getPieceSymbol(unit.getType());
+    const text = this.add.text(0, 0, pieceSymbol, {
+      fontSize: `${Math.floor(this.tileSize * 0.4)}px`,
+      color: '#ffffff',
+      fontStyle: 'bold',
+      stroke: '#000000',
+      strokeThickness: 2
+    });
+    text.setOrigin(0.5);
+
+    // Add buff indicator if unit has buffs
+    if (unit.getBuffs().length > 0) {
+      const buffCount = unit.getBuffs().length;
+      const buffText = this.add.text(
+        circleRadius * 0.7,
+        -circleRadius * 0.7,
+        `+${buffCount}`,
+        {
+          fontSize: `${Math.floor(this.tileSize * 0.2)}px`,
+          color: '#ffd700',
+          fontStyle: 'bold',
+          stroke: '#000000',
+          strokeThickness: 1
+        }
+      );
+      buffText.setOrigin(0.5);
+      container.add(buffText);
+    }
+
+    container.add([circle, text]);
+    container.setInteractive(new Phaser.Geom.Circle(0, 0, circleRadius), Phaser.Geom.Circle.Contains);
+
+    this.unitSprites.set(unit, container);
+  }
+
+  /**
+   * Gets the symbol for a piece type
+   */
+  private getPieceSymbol(pieceType: PieceType): string {
+    switch (pieceType) {
+      case PieceType.PAWN:
+        return 'P';
+      case PieceType.ROOK:
+        return 'R';
+      case PieceType.KNIGHT:
+        return 'N';
+      case PieceType.BISHOP:
+        return 'B';
+      case PieceType.QUEEN:
+        return 'Q';
+      case PieceType.KING:
+        return 'K';
+      default:
+        return '?';
+    }
+  }
+
+  /**
+   * Converts screen coordinates to board position
+   */
+  private screenToBoardPosition(screenX: number, screenY: number): Position | null {
+    // Check if click is within board bounds
+    if (screenX < this.boardStartX || screenX > this.boardStartX + this.boardManager.getDimensions().cols * this.tileSize) {
+      return null;
+    }
+    if (screenY < this.boardStartY || screenY > this.boardStartY + this.boardManager.getDimensions().rows * this.tileSize) {
+      return null;
+    }
+
+    const col = Math.floor((screenX - this.boardStartX) / this.tileSize);
+    const row = Math.floor((screenY - this.boardStartY) / this.tileSize);
+
+    if (row >= 0 && row < this.boardManager.getDimensions().rows &&
+        col >= 0 && col < this.boardManager.getDimensions().cols) {
+      return { row, col };
+    }
+
+    return null;
+  }
+
+  /**
+   * Highlights valid moves for the selected unit
+   */
+  private highlightValidMoves(moves: Position[]): void {
+    this.clearMoveHighlights();
+
+    moves.forEach(pos => {
+      const x = this.boardStartX + pos.col * this.tileSize + this.tileSize / 2;
+      const y = this.boardStartY + pos.row * this.tileSize + this.tileSize / 2;
+
+      // Check if there's a unit at this position (capture highlight)
+      const targetUnit = this.boardManager.getUnit(pos);
+      const isCapture = targetUnit !== null && targetUnit.getTeam() !== this.selectedUnit?.getTeam();
+
+      // Use different color for captures
+      const highlightColor = isCapture ? 0xff4444 : 0x44ff44;
+      const highlight = this.add.rectangle(x, y, this.tileSize * 0.3, this.tileSize * 0.3, highlightColor);
+      highlight.setAlpha(0.6);
+      highlight.setStrokeStyle(2, highlightColor, 1);
+
+      this.moveHighlights.push(highlight);
+    });
+  }
+
+  /**
+   * Clears all move highlights
+   */
+  private clearMoveHighlights(): void {
+    this.moveHighlights.forEach(highlight => highlight.destroy());
+    this.moveHighlights = [];
+  }
+
+  /**
+   * Highlights the selected unit
+   */
+  private highlightSelectedUnit(position: Position): void {
+    this.clearSelectionHighlight();
+
+    const x = this.boardStartX + position.col * this.tileSize + this.tileSize / 2;
+    const y = this.boardStartY + position.row * this.tileSize + this.tileSize / 2;
+
+    this.selectionHighlight = this.add.rectangle(
+      x,
+      y,
+      this.tileSize * 0.9,
+      this.tileSize * 0.9,
+      0xffff00
+    );
+    this.selectionHighlight.setAlpha(0.3);
+    this.selectionHighlight.setStrokeStyle(3, 0xffff00, 1);
+    this.selectionHighlight.setDepth(-1); // Behind units
+  }
+
+  /**
+   * Clears the selection highlight
+   */
+  private clearSelectionHighlight(): void {
+    if (this.selectionHighlight) {
+      this.selectionHighlight.destroy();
+      this.selectionHighlight = null;
+    }
+  }
+
+  /**
    * Sets up input handlers
    */
   private setupInput(): void {
@@ -198,10 +460,116 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Handles clicks on the board
    */
-  private handleBoardClick(x: number, y: number): void {
-    // TODO: Convert screen coordinates to board coordinates
-    // TODO: Handle unit selection and movement
-    console.log('Board clicked at', x, y);
+  private handleBoardClick(screenX: number, screenY: number): void {
+    const boardPos = this.screenToBoardPosition(screenX, screenY);
+
+    if (!boardPos) {
+      // Clicked outside board - deselect
+      this.deselectUnit();
+      return;
+    }
+
+    const clickedUnit = this.boardManager.getUnit(boardPos);
+
+    // If we have a selected unit, try to move it
+    if (this.selectedUnit && this.selectedPosition) {
+      // Check if clicking a valid move
+      const isValidMove = this.validMoves.some(
+        move => move.row === boardPos.row && move.col === boardPos.col
+      );
+
+      if (isValidMove) {
+        // Execute the move
+        this.executeMove(this.selectedPosition, boardPos);
+        return;
+      } else {
+        // Clicked invalid square - deselect or select new unit
+        this.deselectUnit();
+      }
+    }
+
+    // Select a player unit
+    if (clickedUnit && clickedUnit.getTeam() === Team.PLAYER) {
+      this.selectUnit(clickedUnit, boardPos);
+    } else {
+      // Clicked empty square or enemy - deselect
+      this.deselectUnit();
+    }
+  }
+
+  /**
+   * Selects a unit and shows valid moves
+   */
+  private selectUnit(unit: Unit, position: Position): void {
+    this.selectedUnit = unit;
+    this.selectedPosition = position;
+
+    // Get valid moves
+    this.validMoves = this.boardManager.getValidMoves(position);
+
+    // Highlight selected unit
+    this.highlightSelectedUnit(position);
+
+    // Highlight valid moves
+    this.highlightValidMoves(this.validMoves);
+
+    console.log(`Selected ${unit.getType()} at (${position.row}, ${position.col})`);
+    console.log(`Valid moves: ${this.validMoves.length}`);
+  }
+
+  /**
+   * Deselects the current unit
+   */
+  private deselectUnit(): void {
+    this.selectedUnit = null;
+    this.selectedPosition = null;
+    this.validMoves = [];
+    this.clearMoveHighlights();
+    this.clearSelectionHighlight();
+  }
+
+  /**
+   * Executes a move on the board
+   */
+  private executeMove(from: Position, to: Position): void {
+    const capturedUnit = this.boardManager.moveUnit(from, to);
+
+    if (capturedUnit) {
+      // Handle capture
+      console.log(`Captured ${capturedUnit.getType()}`);
+
+      // Remove captured unit sprite
+      const capturedSprite = this.unitSprites.get(capturedUnit);
+      if (capturedSprite) {
+        capturedSprite.destroy();
+        this.unitSprites.delete(capturedUnit);
+      }
+
+      // If it's a player unit, remove from run state (permadeath)
+      if (capturedUnit.getTeam() === Team.PLAYER) {
+        this.runState.removeUnit(capturedUnit);
+      }
+    }
+
+    // Update the moved unit's sprite position
+    const movedUnit = this.boardManager.getUnit(to);
+    if (movedUnit) {
+      const sprite = this.unitSprites.get(movedUnit);
+      if (sprite) {
+        const newX = this.boardStartX + to.col * this.tileSize + this.tileSize / 2;
+        const newY = this.boardStartY + to.row * this.tileSize + this.tileSize / 2;
+        sprite.setPosition(newX, newY);
+      }
+
+      // Mark unit as moved
+      movedUnit.markAsMoved();
+    }
+
+    // Clear selection
+    this.deselectUnit();
+
+    // Check for win/loss conditions
+    this.checkBattleEnd();
   }
 
   /**
