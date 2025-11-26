@@ -133,6 +133,9 @@ export class BattleScene extends Phaser.Scene {
         break; // Board is full
       }
     }
+
+    // After spawning, ensure reachability (especially for pawns)
+    this.ensureReachability();
   }
 
   /**
@@ -229,6 +232,109 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Ensures player units can reach enemy units (reachability check)
+   * Specifically checks pawn lanes to prevent "walking past each other" scenarios
+   */
+  private ensureReachability(): void {
+    const playerUnits = this.boardManager.getUnitsByTeam(Team.PLAYER);
+    const enemyUnits = this.boardManager.getUnitsByTeam(Team.ENEMY);
+    const dimensions = this.boardManager.getDimensions();
+
+    if (playerUnits.length === 0 || enemyUnits.length === 0) {
+      return;
+    }
+
+    // Check each player unit for reachability
+    for (const playerUnit of playerUnits) {
+      const playerPos = playerUnit.getPosition();
+      const unitType = playerUnit.getType();
+
+      // Special handling for pawns (most constrained movement)
+      if (unitType === PieceType.PAWN) {
+        const pawnCol = playerPos.col;
+        const reachableColumns = [pawnCol - 1, pawnCol, pawnCol + 1].filter(
+          col => col >= 0 && col < dimensions.cols
+        );
+
+        // Check if any enemy is in reachable columns
+        let hasEnemyInLane = false;
+        for (const enemy of enemyUnits) {
+          const enemyPos = enemy.getPosition();
+          if (reachableColumns.includes(enemyPos.col)) {
+            hasEnemyInLane = true;
+            break;
+          }
+        }
+
+        // If no enemy in lane, move one into the lane
+        if (!hasEnemyInLane && enemyUnits.length > 0) {
+          console.log(`Pawn at column ${pawnCol} has no reachable enemies - fixing...`);
+
+          // Find the closest enemy to the pawn's column
+          let closestEnemy: Unit | null = null;
+          let minDistance = Infinity;
+
+          for (const enemy of enemyUnits) {
+            const enemyPos = enemy.getPosition();
+            const distance = Math.abs(enemyPos.col - pawnCol);
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestEnemy = enemy;
+            }
+          }
+
+          if (closestEnemy) {
+            // Move the closest enemy into the pawn's lane
+            // Try columns in order: C+1, C, C-1 (prefer positions in front/center)
+            const preferredColumns = [
+              pawnCol + 1 < dimensions.cols ? pawnCol + 1 : null,
+              pawnCol,
+              pawnCol - 1 >= 0 ? pawnCol - 1 : null
+            ].filter(col => col !== null) as number[];
+
+            // Find a row in front of the player (closer to player's row)
+            // Place enemy in rows 0 to playerRow-1
+            const playerRow = playerPos.row;
+            const targetRows = Array.from({ length: playerRow }, (_, i) => i);
+
+            // Try to place in a random row in front of the player
+            const shuffledRows = Phaser.Utils.Array.Shuffle([...targetRows]);
+
+            let moved = false;
+            for (const targetCol of preferredColumns) {
+              for (const targetRow of shuffledRows) {
+                const targetPos = { row: targetRow, col: targetCol };
+
+                if (this.boardManager.isValidPosition(targetPos) &&
+                    this.boardManager.getUnit(targetPos) === null) {
+                  const enemyPos = closestEnemy.getPosition();
+                  const captured = this.boardManager.moveUnit(enemyPos, targetPos);
+
+                  // Update sprite position
+                  const sprite = this.unitSprites.get(closestEnemy);
+                  if (sprite) {
+                    const newX = this.boardStartX + targetPos.col * this.tileSize + this.tileSize / 2;
+                    const newY = this.boardStartY + targetPos.row * this.tileSize + this.tileSize / 2;
+                    sprite.setPosition(newX, newY);
+                  }
+
+                  console.log(`Fixed: Moved enemy to lane (col ${targetPos.col}) for pawn at col ${pawnCol}`);
+                  moved = true;
+                  break; // Successfully moved enemy
+                }
+              }
+              if (moved) break;
+            }
+          }
+        }
+      }
+    }
+
+    // Re-render to update visuals
+    this.renderAllUnits();
+  }
+
+  /**
    * Attempts to fix an unsolvable position by repositioning enemies
    */
   private fixUnsolvablePosition(): boolean {
@@ -238,6 +344,81 @@ export class BattleScene extends Phaser.Scene {
 
     if (playerUnits.length === 0 || enemyUnits.length === 0) {
       return false;
+    }
+
+    // Strategy 0: Check reachability first (especially for pawns)
+    // This prevents "walking past each other" scenarios
+    for (const playerUnit of playerUnits) {
+      if (playerUnit.getType() === PieceType.PAWN) {
+        const playerPos = playerUnit.getPosition();
+        const pawnCol = playerPos.col;
+        const reachableColumns = [pawnCol - 1, pawnCol, pawnCol + 1].filter(
+          col => col >= 0 && col < dimensions.cols
+        );
+
+        // Check if any enemy is in reachable columns
+        let hasEnemyInLane = false;
+        for (const enemy of enemyUnits) {
+          const enemyPos = enemy.getPosition();
+          if (reachableColumns.includes(enemyPos.col)) {
+            hasEnemyInLane = true;
+            break;
+          }
+        }
+
+        // If no enemy in lane, move one into the lane
+        if (!hasEnemyInLane && enemyUnits.length > 0) {
+          // Find the closest enemy
+          let closestEnemy: Unit | null = null;
+          let minDistance = Infinity;
+
+          for (const enemy of enemyUnits) {
+            const enemyPos = enemy.getPosition();
+            const distance = Math.abs(enemyPos.col - pawnCol);
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestEnemy = enemy;
+            }
+          }
+
+          if (closestEnemy) {
+            // Move enemy into pawn's lane
+            // Try columns in order: C+1, C, C-1 (prefer positions in front/center)
+            const preferredColumns = [
+              pawnCol + 1 < dimensions.cols ? pawnCol + 1 : null,
+              pawnCol,
+              pawnCol - 1 >= 0 ? pawnCol - 1 : null
+            ].filter(col => col !== null) as number[];
+
+            const playerRow = playerPos.row;
+            const targetRows = Array.from({ length: playerRow }, (_, i) => i);
+            const shuffledRows = Phaser.Utils.Array.Shuffle([...targetRows]);
+
+            for (const targetCol of preferredColumns) {
+              for (const targetRow of shuffledRows) {
+                const targetPos = { row: targetRow, col: targetCol };
+
+                if (this.boardManager.isValidPosition(targetPos) &&
+                    this.boardManager.getUnit(targetPos) === null) {
+                  const enemyPos = closestEnemy.getPosition();
+                  this.boardManager.moveUnit(enemyPos, targetPos);
+
+                  // Update sprite position
+                  const sprite = this.unitSprites.get(closestEnemy);
+                  if (sprite) {
+                    const newX = this.boardStartX + targetPos.col * this.tileSize + this.tileSize / 2;
+                    const newY = this.boardStartY + targetPos.row * this.tileSize + this.tileSize / 2;
+                    sprite.setPosition(newX, newY);
+                  }
+
+                  console.log('Fixed: Moved enemy into pawn lane for reachability');
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     // Strategy 1: Try to place an enemy diagonally in front of a player pawn
@@ -763,6 +944,11 @@ export class BattleScene extends Phaser.Scene {
 
       // Mark unit as moved
       movedUnit.markAsMoved();
+
+      // Check for pawn promotion (only for player pawns)
+      if (!isEnemyMove) {
+        this.checkForPromotion(movedUnit, to);
+      }
     }
 
     // Clear selection (only for player moves)
@@ -780,6 +966,79 @@ export class BattleScene extends Phaser.Scene {
         this.makeEnemyMove();
       });
     }
+  }
+
+  /**
+   * Checks if a pawn should be promoted and handles the promotion
+   */
+  private checkForPromotion(unit: Unit, position: Position): void {
+    // Only promote player pawns that reach row 0
+    if (unit.getType() !== PieceType.PAWN ||
+        unit.getTeam() !== Team.PLAYER ||
+        position.row !== 0) {
+      return;
+    }
+
+    console.log('Pawn reached top row - promoting!');
+
+    // Promotion pool: ROOK, KNIGHT, BISHOP (no Queen - too OP for 5x5)
+    const promotionTypes: PieceType[] = [
+      PieceType.ROOK,
+      PieceType.KNIGHT,
+      PieceType.BISHOP
+    ];
+
+    // Randomly select promotion type
+    const promotedType = Phaser.Math.RND.pick(promotionTypes);
+
+    // Store the pawn's buffs to transfer them
+    const buffs = unit.getBuffs();
+
+    // Remove the old pawn from RunState
+    this.runState.removeUnit(unit);
+
+    // Remove the old pawn from BoardManager
+    this.boardManager.removeUnit(position);
+
+    // Destroy the old pawn sprite
+    const oldSprite = this.unitSprites.get(unit);
+    if (oldSprite) {
+      oldSprite.destroy();
+      this.unitSprites.delete(unit);
+    }
+
+    // Create the new promoted unit
+    let promotedUnit: Unit;
+    switch (promotedType) {
+      case PieceType.ROOK:
+        promotedUnit = new Rook(Team.PLAYER, position);
+        break;
+      case PieceType.KNIGHT:
+        promotedUnit = new Knight(Team.PLAYER, position);
+        break;
+      case PieceType.BISHOP:
+        promotedUnit = new Bishop(Team.PLAYER, position);
+        break;
+      default:
+        // Fallback (shouldn't happen)
+        promotedUnit = new Rook(Team.PLAYER, position);
+    }
+
+    // Transfer buffs from the pawn to the promoted unit
+    for (const buff of buffs) {
+      promotedUnit.addBuff(buff);
+    }
+
+    // Add the new unit to RunState
+    this.runState.addUnit(promotedUnit);
+
+    // Place the new unit on the board at the same position
+    this.boardManager.placeUnit(promotedUnit, position);
+
+    // Render the new unit visually
+    this.renderUnit(promotedUnit, position);
+
+    console.log(`Pawn promoted to ${promotedType}!`);
   }
 
   /**
