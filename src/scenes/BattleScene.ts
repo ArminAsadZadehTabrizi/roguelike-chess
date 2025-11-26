@@ -520,7 +520,7 @@ export class BattleScene extends Phaser.Scene {
 
   /**
    * Makes an enemy AI move
-   * Finds a random enemy with valid moves and executes one
+   * Implements stage-based difficulty with blunder chance and enhanced heuristics
    */
   private makeEnemyMove(): void {
     // Check if game is already over
@@ -532,6 +532,20 @@ export class BattleScene extends Phaser.Scene {
 
     if (enemyUnits.length === 0) {
       return; // No enemies left
+    }
+
+    // Get current stage for difficulty calculation
+    const currentStage = this.runState.getCurrentStage();
+
+    // Calculate blunder chance based on stage
+    let blunderChance: number;
+    if (currentStage >= 10) {
+      blunderChance = 0; // 0% chance at stage 10+
+    } else if (currentStage >= 5) {
+      blunderChance = 0.2; // 20% chance at stage 5-9
+    } else {
+      // Linear interpolation between stage 1 (40%) and stage 5 (20%)
+      blunderChance = 0.4 - ((currentStage - 1) / 4) * 0.2;
     }
 
     // Find enemies with valid moves
@@ -554,13 +568,118 @@ export class BattleScene extends Phaser.Scene {
     // Pick a random enemy with moves
     const selected = Phaser.Math.RND.pick(enemiesWithMoves);
 
-    // Pick a random valid move
-    const targetMove = Phaser.Math.RND.pick(selected.moves);
+    // Roll for blunder chance
+    const roll = Math.random();
+    let targetMove: Position;
 
-    console.log(`Enemy ${selected.unit.getType()} moving from (${selected.position.row}, ${selected.position.col}) to (${targetMove.row}, ${targetMove.col})`);
+    if (roll < blunderChance) {
+      // Blunder: pick a random move
+      targetMove = Phaser.Math.RND.pick(selected.moves);
+      console.log(`[BLUNDER] Enemy ${selected.unit.getType()} making random move from (${selected.position.row}, ${selected.position.col}) to (${targetMove.row}, ${targetMove.col})`);
+    } else {
+      // Smart move: pick the highest scoring move
+      targetMove = this.selectBestMove(selected.unit, selected.position, selected.moves, currentStage);
+      console.log(`[SMART] Enemy ${selected.unit.getType()} moving from (${selected.position.row}, ${selected.position.col}) to (${targetMove.row}, ${targetMove.col})`);
+    }
 
     // Execute the enemy move
     this.executeMove(selected.position, targetMove, true);
+  }
+
+  /**
+   * Selects the best move for an enemy unit based on heuristics
+   */
+  private selectBestMove(unit: Unit, from: Position, moves: Position[], currentStage: number): Position {
+    let bestMove = moves[0];
+    let bestScore = -Infinity;
+
+    // Get player units for distance calculation
+    const playerUnits = this.boardManager.getUnitsByTeam(Team.PLAYER);
+    const closestPlayerPos = this.findClosestPlayerPosition(from, playerUnits);
+
+    for (const move of moves) {
+      let score = 0;
+
+      // Capture score: +100 if capturing
+      const targetUnit = this.boardManager.getUnit(move);
+      if (targetUnit && targetUnit.getTeam() === Team.PLAYER) {
+        score += 100;
+      }
+
+      // Safety score (only for high difficulty > Stage 4): -50 if target square is under attack
+      if (currentStage > 4) {
+        if (this.isSquareUnderAttack(move, Team.ENEMY)) {
+          score -= 50;
+        }
+      }
+
+      // Aggression: +10 points for moving closer to player
+      if (closestPlayerPos) {
+        const currentDistance = this.getManhattanDistance(from, closestPlayerPos);
+        const newDistance = this.getManhattanDistance(move, closestPlayerPos);
+        if (newDistance < currentDistance) {
+          score += 10;
+        }
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+      }
+    }
+
+    return bestMove;
+  }
+
+  /**
+   * Checks if a square is under attack by units of the specified team
+   */
+  private isSquareUnderAttack(pos: Position, defendingTeam: Team): boolean {
+    const attackingTeam = defendingTeam === Team.PLAYER ? Team.ENEMY : Team.PLAYER;
+    const attackers = this.boardManager.getUnitsByTeam(attackingTeam);
+
+    for (const attacker of attackers) {
+      const attackerPos = attacker.getPosition();
+      const validMoves = this.boardManager.getValidMoves(attackerPos);
+
+      // Check if this attacker can reach the target position
+      if (validMoves.some(move => move.row === pos.row && move.col === pos.col)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Finds the closest player unit position to a given position
+   */
+  private findClosestPlayerPosition(from: Position, playerUnits: Unit[]): Position | null {
+    if (playerUnits.length === 0) {
+      return null;
+    }
+
+    let closestPos: Position | null = null;
+    let minDistance = Infinity;
+
+    for (const playerUnit of playerUnits) {
+      const playerPos = playerUnit.getPosition();
+      const distance = this.getManhattanDistance(from, playerPos);
+
+      if (distance < minDistance) {
+        minDistance = distance;
+        closestPos = playerPos;
+      }
+    }
+
+    return closestPos;
+  }
+
+  /**
+   * Calculates Manhattan distance between two positions
+   */
+  private getManhattanDistance(pos1: Position, pos2: Position): number {
+    return Math.abs(pos1.row - pos2.row) + Math.abs(pos1.col - pos2.col);
   }
 
   /**
