@@ -73,6 +73,9 @@ export class BattleScene extends Phaser.Scene {
 
     // Spawn enemy units based on difficulty
     this.spawnEnemyUnits();
+
+    // Ensure solvability - player must have at least one valid move
+    this.ensureSolvability();
   }
 
   /**
@@ -180,6 +183,203 @@ export class BattleScene extends Phaser.Scene {
     }
 
     return false;
+  }
+
+  /**
+   * Ensures the player has at least one valid move at the start
+   * Repositions enemies if necessary to prevent softlocks
+   */
+  private ensureSolvability(): void {
+    const maxAttempts = 20; // Prevent infinite loops
+    let attempts = 0;
+
+    while (attempts < maxAttempts) {
+      // Check if player has any valid moves
+      const playerUnits = this.boardManager.getUnitsByTeam(Team.PLAYER);
+      let hasValidMove = false;
+
+      for (const unit of playerUnits) {
+        const pos = unit.getPosition();
+        const validMoves = this.boardManager.getValidMoves(pos);
+        if (validMoves.length > 0) {
+          hasValidMove = true;
+          break;
+        }
+      }
+
+      if (hasValidMove) {
+        console.log('Solvability check passed - player has valid moves');
+        return; // Player can move, we're good
+      }
+
+      // Player is blocked - try to fix it
+      console.log('Player has no valid moves - attempting to fix...');
+      const fixed = this.fixUnsolvablePosition();
+
+      if (!fixed) {
+        console.warn('Could not fix unsolvable position after attempts');
+        break;
+      }
+
+      attempts++;
+    }
+
+    // Re-render units after repositioning
+    this.renderAllUnits();
+  }
+
+  /**
+   * Attempts to fix an unsolvable position by repositioning enemies
+   */
+  private fixUnsolvablePosition(): boolean {
+    const playerUnits = this.boardManager.getUnitsByTeam(Team.PLAYER);
+    const enemyUnits = this.boardManager.getUnitsByTeam(Team.ENEMY);
+    const dimensions = this.boardManager.getDimensions();
+
+    if (playerUnits.length === 0 || enemyUnits.length === 0) {
+      return false;
+    }
+
+    // Strategy 1: Try to place an enemy diagonally in front of a player pawn
+    for (const playerUnit of playerUnits) {
+      if (playerUnit.getType() === PieceType.PAWN) {
+        const playerPos = playerUnit.getPosition();
+        // Pawns move up (row decreases), so check diagonal positions above
+        const capturePositions = [
+          { row: playerPos.row - 1, col: playerPos.col - 1 },
+          { row: playerPos.row - 1, col: playerPos.col + 1 }
+        ];
+
+        for (const capturePos of capturePositions) {
+          if (this.boardManager.isValidPosition(capturePos) &&
+              this.boardManager.getUnit(capturePos) === null) {
+            // Find an enemy to move there
+            for (const enemy of enemyUnits) {
+              const enemyPos = enemy.getPosition();
+              // Try to move this enemy to the capture position
+              if (this.boardManager.isValidPosition(capturePos)) {
+                const targetUnit = this.boardManager.getUnit(capturePos);
+                if (targetUnit === null) {
+                  // Position is empty, try moving the enemy there
+                  const captured = this.boardManager.moveUnit(enemyPos, capturePos);
+                  // Move succeeded (captured is null or a unit, both are fine)
+                  // Update sprite position
+                  const sprite = this.unitSprites.get(enemy);
+                  if (sprite) {
+                    const newX = this.boardStartX + capturePos.col * this.tileSize + this.tileSize / 2;
+                    const newY = this.boardStartY + capturePos.row * this.tileSize + this.tileSize / 2;
+                    sprite.setPosition(newX, newY);
+                  }
+                  console.log('Fixed: Moved enemy to capture position');
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Strategy 2: Move a blocking enemy away from player units
+    for (const playerUnit of playerUnits) {
+      const playerPos = playerUnit.getPosition();
+      const validMoves = playerUnit.getPossibleMoves(playerPos, this.boardManager);
+
+      // Find positions that are blocking valid moves
+      for (const move of validMoves) {
+        const blockingUnit = this.boardManager.getUnit(move);
+        if (blockingUnit && blockingUnit.getTeam() === Team.ENEMY) {
+          // Try to move this blocking enemy away
+          const blockingPos = blockingUnit.getPosition();
+          const enemyMoves = this.boardManager.getValidMoves(blockingPos);
+
+          // Find a position that's not blocking player moves
+          for (const enemyMove of enemyMoves) {
+            if (enemyMove.row !== move.row || enemyMove.col !== move.col) {
+              // Move the enemy away using moveUnit for atomic operation
+              const moved = this.boardManager.moveUnit(blockingPos, enemyMove);
+              // Update sprite position
+              const sprite = this.unitSprites.get(blockingUnit);
+              if (sprite) {
+                const newX = this.boardStartX + enemyMove.col * this.tileSize + this.tileSize / 2;
+                const newY = this.boardStartY + enemyMove.row * this.tileSize + this.tileSize / 2;
+                sprite.setPosition(newX, newY);
+              }
+              console.log('Fixed: Moved blocking enemy away');
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    // Strategy 3: Move an enemy to a random valid position
+    for (const enemy of enemyUnits) {
+      const enemyPos = enemy.getPosition();
+      const validMoves = this.boardManager.getValidMoves(enemyPos);
+
+      if (validMoves.length > 0) {
+        const randomMove = Phaser.Math.RND.pick(validMoves);
+        // Use moveUnit for atomic operation
+        this.boardManager.moveUnit(enemyPos, randomMove);
+        // Update sprite position
+        const sprite = this.unitSprites.get(enemy);
+        if (sprite) {
+          const newX = this.boardStartX + randomMove.col * this.tileSize + this.tileSize / 2;
+          const newY = this.boardStartY + randomMove.row * this.tileSize + this.tileSize / 2;
+          sprite.setPosition(newX, newY);
+        }
+        console.log('Fixed: Moved enemy to random position');
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Makes an enemy AI move
+   * Finds a random enemy with valid moves and executes one
+   */
+  private makeEnemyMove(): void {
+    // Check if game is already over
+    if (this.checkBattleEnd()) {
+      return;
+    }
+
+    const enemyUnits = this.boardManager.getUnitsByTeam(Team.ENEMY);
+
+    if (enemyUnits.length === 0) {
+      return; // No enemies left
+    }
+
+    // Find enemies with valid moves
+    const enemiesWithMoves: Array<{ unit: Unit; position: Position; moves: Position[] }> = [];
+
+    for (const enemy of enemyUnits) {
+      const pos = enemy.getPosition();
+      const validMoves = this.boardManager.getValidMoves(pos);
+
+      if (validMoves.length > 0) {
+        enemiesWithMoves.push({ unit: enemy, position: pos, moves: validMoves });
+      }
+    }
+
+    if (enemiesWithMoves.length === 0) {
+      console.log('No enemy units have valid moves');
+      return; // No enemies can move
+    }
+
+    // Pick a random enemy with moves
+    const selected = Phaser.Math.RND.pick(enemiesWithMoves);
+
+    // Pick a random valid move
+    const targetMove = Phaser.Math.RND.pick(selected.moves);
+
+    console.log(`Enemy ${selected.unit.getType()} moving from (${selected.position.row}, ${selected.position.col}) to (${targetMove.row}, ${targetMove.col})`);
+
+    // Execute the enemy move
+    this.executeMove(selected.position, targetMove, true);
   }
 
   /**
@@ -531,12 +731,12 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Executes a move on the board
    */
-  private executeMove(from: Position, to: Position): void {
+  private executeMove(from: Position, to: Position, isEnemyMove: boolean = false): void {
     const capturedUnit = this.boardManager.moveUnit(from, to);
 
     if (capturedUnit) {
       // Handle capture
-      console.log(`Captured ${capturedUnit.getType()}`);
+      console.log(`${isEnemyMove ? 'Enemy' : 'Player'} captured ${capturedUnit.getType()}`);
 
       // Remove captured unit sprite
       const capturedSprite = this.unitSprites.get(capturedUnit);
@@ -565,24 +765,35 @@ export class BattleScene extends Phaser.Scene {
       movedUnit.markAsMoved();
     }
 
-    // Clear selection
-    this.deselectUnit();
+    // Clear selection (only for player moves)
+    if (!isEnemyMove) {
+      this.deselectUnit();
+    }
 
     // Check for win/loss conditions
-    this.checkBattleEnd();
+    const gameOver = this.checkBattleEnd();
+
+    // If game is not over and it was a player move, trigger enemy AI
+    if (!gameOver && !isEnemyMove) {
+      // Delay enemy move by 500ms
+      this.time.delayedCall(500, () => {
+        this.makeEnemyMove();
+      });
+    }
   }
 
   /**
    * Checks win/loss conditions
+   * @returns true if game is over, false otherwise
    */
-  private checkBattleEnd(): void {
+  private checkBattleEnd(): boolean {
     const playerUnits = this.boardManager.getUnitsByTeam(Team.PLAYER);
     const enemyUnits = this.boardManager.getUnitsByTeam(Team.ENEMY);
 
     // Player loses if no units
     if (playerUnits.length === 0) {
       this.handleDefeat();
-      return;
+      return true;
     }
 
     // Check victory conditions
@@ -590,13 +801,17 @@ export class BattleScene extends Phaser.Scene {
       // Boss stage: need to checkmate or capture the king
       if (this.boardManager.isCheckmate(Team.ENEMY)) {
         this.handleVictory();
+        return true;
       }
     } else {
       // Normal stage: capture all enemy pieces
       if (enemyUnits.length === 0) {
         this.handleVictory();
+        return true;
       }
     }
+
+    return false;
   }
 
   /**

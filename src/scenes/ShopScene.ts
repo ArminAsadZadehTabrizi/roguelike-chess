@@ -1,7 +1,7 @@
 import Phaser from 'phaser';
 import { RunState } from '../core/RunState';
-import { ShopItem, PieceType } from '../core/types';
-import { Pawn, Rook, Knight, Bishop, Queen, Team } from '../core/Unit';
+import { ShopItem, PieceType, Team } from '../core/types';
+import { Pawn, Rook, Knight, Bishop, Queen } from '../core/Unit';
 
 /**
  * ShopScene allows the player to purchase new pieces and upgrades
