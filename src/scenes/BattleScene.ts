@@ -105,28 +105,37 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Spawns enemy units based on current difficulty
+   * Tiered Spawning System
+   *
+   * Unit Tiers:
+   * - Tier 1: Pawn
+   * - Tier 2: Knight, Bishop
+   * - Tier 3: Rook
+   * - Tier 4: Queen
+   */
+
+  /**
+   * Spawns enemy units based on tiered spawning system
    */
   private spawnEnemyUnits(): void {
+    const currentStage = this.runState.getCurrentStage();
     const isBoss = this.runState.isBossStage();
-    const difficulty = this.runState.getDifficultyFactor();
     const dimensions = this.boardManager.getDimensions();
 
-    let enemyCount = Math.floor(2 + difficulty * 2);
-
     if (isBoss) {
-      // Boss stage: spawn a king and supporting pieces
+      // Boss stage: spawn a king first
       const kingPos = { row: 0, col: Math.floor(dimensions.cols / 2) };
       const king = new King(Team.ENEMY, kingPos);
       this.boardManager.placeUnit(king, kingPos);
-
-      // Add supporting pieces
-      enemyCount = Math.floor(3 + difficulty * 1.5);
     }
 
-    // Spawn random enemy pieces
-    for (let i = 0; i < enemyCount; i++) {
-      const enemy = this.createRandomEnemyPiece(difficulty);
+    // Determine enemy count and composition based on stage
+    const enemyCount = this.determineEnemyCount(currentStage, isBoss);
+    const enemyTiers = this.determineEnemyComposition(enemyCount, currentStage);
+
+    // Spawn enemies based on tier composition
+    for (const tier of enemyTiers) {
+      const enemy = this.createEnemyByTier(tier);
       const placed = this.tryPlaceEnemyUnit(enemy);
 
       if (!placed) {
@@ -139,31 +148,170 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Creates a random enemy piece based on difficulty
+   * Determines the number of enemies to spawn based on stage
    */
-  private createRandomEnemyPiece(difficulty: number): Unit {
-    const types: PieceType[] = [PieceType.PAWN, PieceType.ROOK, PieceType.KNIGHT, PieceType.BISHOP];
-
-    // Higher difficulty means better pieces
-    if (difficulty > 2) {
-      types.push(PieceType.QUEEN);
+  private determineEnemyCount(stage: number, isBoss: boolean): number {
+    if (isBoss) {
+      // Boss stages get additional guards based on stage
+      // Stage 4: 2 guards, Stage 8: 3 guards, Stage 12: 4 guards, etc.
+      const bossLevel = Math.floor(stage / 4);
+      return Math.min(2 + bossLevel, 6); // Cap at 6 guards
     }
 
-    const randomType = Phaser.Math.RND.pick(types);
+    if (stage === 1) {
+      // Stage 1: Strict tutorial rules
+      // 45% chance: 1 Enemy
+      // 45% chance: 2 Enemies
+      // 10% chance: 3 Enemies
+      const roll = Math.random();
+      if (roll < 0.45) {
+        return 1;
+      } else if (roll < 0.9) {
+        return 2;
+      } else {
+        return 3;
+      }
+    } else {
+      // Later stages: Progressive increase
+      // Stage 2-3: 2-3 enemies
+      // Stage 4-6: 2-4 enemies
+      // Stage 7+: 3-5 enemies
+      if (stage <= 3) {
+        return Phaser.Math.RND.between(2, 3);
+      } else if (stage <= 6) {
+        return Phaser.Math.RND.between(2, 4);
+      } else {
+        return Phaser.Math.RND.between(3, 5);
+      }
+    }
+  }
+
+  /**
+   * Determines the tier composition of enemies to spawn
+   * Returns an array of tier numbers (1-4)
+   */
+  private determineEnemyComposition(enemyCount: number, stage: number): number[] {
+    const tiers: number[] = [];
+
+    if (stage === 1) {
+      // Stage 1: Strict composition rules
+      if (enemyCount === 3) {
+        // 3 Enemies: MUST be 3x Tier 1 (Pawns)
+        return [1, 1, 1];
+      } else if (enemyCount === 2) {
+        // 2 Enemies:
+        // 70% chance: 2x Tier 1 (Pawns)
+        // 30% chance: 1x Tier 1 + 1x Tier 2
+        // FORBIDDEN: 2x Tier 2
+        const roll = Math.random();
+        if (roll < 0.7) {
+          return [1, 1];
+        } else {
+          return [1, 2];
+        }
+      } else {
+        // 1 Enemy:
+        // 50% chance Tier 1, 50% chance Tier 2
+        return [Math.random() < 0.5 ? 1 : 2];
+      }
+    } else {
+      // Later stages: Progressive tier system
+      const availableTiers = this.getAvailableTiers(stage);
+
+      // Distribute enemies across available tiers
+      for (let i = 0; i < enemyCount; i++) {
+        // Weight tier selection: prefer lower tiers but allow higher tiers
+        let tier: number;
+        const roll = Math.random();
+
+        if (stage <= 3) {
+          // Stage 2-3: Mostly Tier 1-2, allow 2x Tier 2
+          if (roll < 0.5) {
+            tier = 1;
+          } else if (roll < 0.95) {
+            tier = 2;
+          } else {
+            tier = availableTiers.includes(3) ? 3 : 2;
+          }
+        } else if (stage <= 6) {
+          // Stage 4-6: Introduce Tier 3 (Rook)
+          if (roll < 0.3) {
+            tier = 1;
+          } else if (roll < 0.7) {
+            tier = 2;
+          } else if (roll < 0.95) {
+            tier = 3;
+          } else {
+            tier = availableTiers.includes(4) ? 4 : 3;
+          }
+        } else {
+          // Stage 7+: Introduce Tier 4 (Queen)
+          if (roll < 0.2) {
+            tier = 1;
+          } else if (roll < 0.5) {
+            tier = 2;
+          } else if (roll < 0.8) {
+            tier = 3;
+          } else {
+            tier = 4;
+          }
+        }
+
+        // Ensure tier is available for this stage
+        if (availableTiers.includes(tier)) {
+          tiers.push(tier);
+        } else {
+          // Fallback to highest available tier
+          tiers.push(Math.max(...availableTiers));
+        }
+      }
+    }
+
+    return tiers;
+  }
+
+  /**
+   * Gets the available tiers for a given stage
+   */
+  private getAvailableTiers(stage: number): number[] {
+    if (stage === 1) {
+      return [1, 2]; // Stage 1: Only Tier 1 and Tier 2
+    } else if (stage <= 3) {
+      return [1, 2]; // Stage 2-3: Tier 1 and Tier 2
+    } else if (stage <= 6) {
+      return [1, 2, 3]; // Stage 4-6: Tier 1, 2, and 3
+    } else {
+      return [1, 2, 3, 4]; // Stage 7+: All tiers
+    }
+  }
+
+  /**
+   * Creates an enemy unit based on tier
+   */
+  private createEnemyByTier(tier: number): Unit {
     const tempPos = { row: 0, col: 0 };
 
-    switch (randomType) {
-      case PieceType.PAWN:
+    switch (tier) {
+      case 1:
+        // Tier 1: Pawn
         return new Pawn(Team.ENEMY, tempPos);
-      case PieceType.ROOK:
+
+      case 2:
+        // Tier 2: Knight or Bishop (50/50)
+        return Math.random() < 0.5
+          ? new Knight(Team.ENEMY, tempPos)
+          : new Bishop(Team.ENEMY, tempPos);
+
+      case 3:
+        // Tier 3: Rook
         return new Rook(Team.ENEMY, tempPos);
-      case PieceType.KNIGHT:
-        return new Knight(Team.ENEMY, tempPos);
-      case PieceType.BISHOP:
-        return new Bishop(Team.ENEMY, tempPos);
-      case PieceType.QUEEN:
+
+      case 4:
+        // Tier 4: Queen
         return new Queen(Team.ENEMY, tempPos);
+
       default:
+        // Fallback: Pawn
         return new Pawn(Team.ENEMY, tempPos);
     }
   }
